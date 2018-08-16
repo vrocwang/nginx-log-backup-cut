@@ -72,12 +72,11 @@ def check_nginx(nginx_sbin, nginx_conf):
 
 
 # 重启nginx
-def reload_nginx(nginx_sbin, nginx_conf):
-    pid = com.getoutput("ps aux | grep nginx| grep master|grep -v grep| awk '{print $2}'")
-    if pid:
-        output = com.getstatusoutput("%s -s reload" % nginx_sbin)
+def reload_nginx(nginx_pid):
+    if os.path.exists(nginx_pid):
+        output = com.getoutput("kill -USR1 `cat %s`" % nginx_pid)
     else:
-        output = com.getstatusoutput("%s -c %s" % (nginx_sbin, nginx_conf))
+        output = '%s not exists or nginx not startup'
     return output
 
 
@@ -180,6 +179,7 @@ if __name__ == "__main__":
 
     NGINX = config.get('nginx', 'sbin')
     CONF = config.get('nginx', 'conf')
+    PID = config.get('nginx', 'pid')
     EXT = config.get('loginfo', 'ext')
     # Log
     LOG = []
@@ -194,9 +194,9 @@ if __name__ == "__main__":
         INFO = check_file(loglist=LOG, today=TODAY, packdate=PACKDATE, ext=EXT)
         MESSAGE['Log-Warn'] .append(INFO)
         # 重启nginx
-        if reload_nginx(NGINX, CONF)[0]:
+        if reload_nginx(PID):
             # 重启失败提示
-            MESSAGE['Nginx-Error'].append(reload_nginx(NGINX, CONF)[1])
+            MESSAGE['Nginx-Error'].append(reload_nginx(PID))
 
     msg = {}
     for mk in MESSAGE:
