@@ -15,6 +15,15 @@ import smtplib
 from email.header import Header
 from email.mime.text import MIMEText
 
+if sys.version_info > (3, 0):
+    import urllib.request as ul
+    import subprocess as com
+    import configparser as cf
+else:
+    import urllib2 as ul
+    import commands as com
+    import ConfigParser as cf
+
 
 # 发送信息，邮件
 class Sendmessage:
@@ -50,47 +59,33 @@ class Sendmessage:
         }
 
         sendData = json.dumps(data, indent=4)
-        if check_python():
-            import urllib.request as ul
-        else:
-            import urllib2 as ul
 
         request = ul.Request(url=url, data=sendData, headers=header)
         urlopen = ul.urlopen(request)
         return urlopen.read
 
 
-# Python版本
-def check_python():
-    if sys.version_info > (3, 0):
-        return 1
-    else:
-        return 0
-
-
-# 检查nginx状态
+# 检查nginx配置文件
 def check_nginx(nginx_sbin, nginx_conf):
-    if not check_python():
-        import commands as com
-    else:
-        import subprocess as com
     output = com.getstatusoutput("%s -t -c %s" % (nginx_sbin, nginx_conf))
     return output
 
 
 # 重启nginx
 def reload_nginx(nginx_sbin, nginx_conf):
-    pid = os.system("ps aux | grep nginx| grep -v grep| awk '{print $2}'")
+    pid = com.getoutput("ps aux | grep nginx| grep master|grep -v grep| awk '{print $2}'")
     if pid:
-        os.system("%s -s reload" % nginx_sbin)
+        output = com.getstatusoutput("%s -s reload" % nginx_sbin)
     else:
-        os.system("%s -c %s" % (nginx_sbin, nginx_conf))
+        output = com.getstatusoutput("%s -c %s" % (nginx_sbin, nginx_conf))
+    return output
 
 
 # 日志重命名
 def rename_log(log, flag):
-    """???log??
-	access.log --> access-20180815.log
+    """
+    重命名log文件
+    access.log --> access-20180815.log
     """
     if os.path.exists(log):
         os.system("mv %s %s-%s.%s" % (log, log.split('.')[0], flag, log.split('.')[1]))
@@ -109,6 +104,40 @@ def get_files(path):
         for f in filename:
             files.append(os.path.join(dirpath, f))
     return files
+
+
+# 分析处理日志
+def check_file(loglist, today, packdate, ext):
+    """
+    loglist: 日志列表
+    today: 今天日期
+    packdate: 打包时间（packdate天前）
+    ext: 文件扩展名
+    """
+    info = []
+    for logs in loglist:
+        logfiles = get_files(logs)
+        for logf in logfiles:
+            if os.path.isfile(logf):
+                logpath = os.path.split(logf)[0]
+                logname = os.path.split(logf)[1]
+                # 切换工作目录
+                os.chdir(logpath)
+                # 切割当天日志
+                newfile = str(logname.split('.')[0]) + '.%s' % today
+                if logname == newfile:
+                    if get_mtime(logname) is today:
+                        rename_log(logname, today)
+                    else:
+                        info.append('%s have not log:%s/%s'% (today, logpath, newfile))
+                # 打包7天前文件
+                oldfile = str(logname.split('.')[0]) + '-%s.%s' % (packdate, ext)
+                if logname == oldfile:
+                    package_log(logname)
+                else:
+                    info.append('%s/%s not exists !' % (logpath, oldfile))
+
+    return info
 
 
 # 日志修改时间
@@ -139,52 +168,35 @@ if __name__ == "__main__":
 
     # Today
     TODAY = datetime.datetime.now().strftime("%Y-%m-%d")
-    # 7 days ago
-    WEEKAGO = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
 
     # 读取配置文件
     f = 'conf.ini'
-    if check_python():
-        import configparser as cf
-    else:
-        import ConfigParser as cf
     config = cf.ConfigParser()
     config.read(f)
 
+    # 打包时间
+    AGO = config.getint('packdate', 'ago')
+    PACKDATE = (datetime.datetime.now() - datetime.timedelta(days=AGO)).strftime("%Y-%m-%d")
+
     NGINX = config.get('nginx', 'sbin')
     CONF = config.get('nginx', 'conf')
-    EXT = config.get('nginx', 'ext')
+    EXT = config.get('loginfo', 'ext')
     # Log
     LOG = []
-    for lopts in config.options('nginx-log'):
-        LOG.append(config.get('nginx-log', lopts))
+    for lopts in config.options('loglist'):
+        LOG.append(config.get('loglist', lopts))
 
     # 判断nginx配置文件是否正常
     if check_nginx(NGINX, CONF)[0]:
         # Nginx配置错误提示
         MESSAGE['Nginx-Error'].append(check_nginx(NGINX, CONF)[1])
     else:
-        for logs in LOG:
-            logfiles = get_files(logs)
-            for logf in logfiles:
-                if os.path.isfile(logf):
-                    logpath = os.path.split(logf)[0]
-                    logname = os.path.split(logf)[1]
-                    # 切换工作目录
-                    os.chdir(logpath)
-                    # 切割当天日志
-                    newfile = logname.split('.')[0] + '.%s' % TODAY
-                    if logname == newfile:
-                        if get_mtime(logname) is TODAY:
-                            rename_log(logname, TODAY)
-                    # ??7????
-                    oldfile = logname.split('-')[0] + '-%s.%s' % (WEEKAGO, EXT)
-                    if logname == oldfile:
-                        package_log(logname)
-                    else:
-                        MESSAGE['Log-Warn'].append('%s/%s not exists !' % (logpath, oldfile))
-        # ??nginx
-        reload_nginx(NGINX, CONF)
+        INFO = check_file(loglist=LOG, today=TODAY, packdate=PACKDATE, ext=EXT)
+        MESSAGE['Log-Warn'] .append(INFO)
+        # 重启nginx
+        if reload_nginx(NGINX, CONF)[0]:
+            # 重启失败提示
+            MESSAGE['Nginx-Error'].append(reload_nginx(NGINX, CONF)[1])
 
     msg = {}
     for mk in MESSAGE:
